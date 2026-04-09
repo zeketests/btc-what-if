@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 BTC What-If Calculator
-Fetches the current BTC price and shows how much $100 invested on January 1st
-of each year (since Bitcoin's creation in 2009) would be worth today.
+Fetches the current BTC price and shows how much $100 invested at the yearly
+average price would be worth today, for every year since Bitcoin's creation.
 
 Usage:
   python btc_what_if.py               # print results to terminal
@@ -12,30 +12,31 @@ Usage:
 import json
 import sys
 import urllib.request
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 BTC_START_YEAR = 2010  # 2009 had no real exchange price
 
-# Jan 1st BTC prices (USD) — hardcoded fallbacks / pre-2013 values
-# Sources: CoinGecko / public historical data
-HISTORICAL_JAN1_PRICES = {
-    2010: 0.00099,
-    2011: 0.30,
-    2012: 5.27,
-    2013: 13.30,
-    2014: 771.40,
-    2015: 314.25,
-    2016: 434.33,
-    2017: 998.33,
-    2018: 13412.44,
-    2019: 3843.52,
-    2020: 7200.17,
-    2021: 29374.15,
-    2022: 47686.81,
-    2023: 16547.50,
-    2024: 42531.91,
-    2025: 93429.00,
+# Yearly average BTC prices (USD) — hardcoded fallbacks for pre-API years
+# and as a safety net if CoinGecko is unavailable.
+# Sources: CoinGecko / CoinMarketCap historical averages
+HISTORICAL_AVG_PRICES = {
+    2010: 0.07,
+    2011: 5.97,
+    2012: 8.27,
+    2013: 193.0,
+    2014: 527.0,
+    2015: 272.0,
+    2016: 567.0,
+    2017: 3996.0,
+    2018: 7382.0,
+    2019: 7379.0,
+    2020: 11135.0,
+    2021: 47111.0,
+    2022: 28145.0,
+    2023: 26890.0,
+    2024: 65000.0,
+    2025: 90000.0,
 }
 
 README_START = "<!-- BTC_RESULTS_START -->"
@@ -50,19 +51,36 @@ def fetch_current_btc_price() -> float:
     return float(data["bitcoin"]["usd"])
 
 
-def fetch_jan1_price(year: int):
-    if year < 2013:
-        return HISTORICAL_JAN1_PRICES.get(year)
+def _unix(year: int, month: int, day: int) -> int:
+    return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
 
-    date_str = f"01-01-{year}"
-    url = f"https://api.coingecko.com/api/v3/coins/bitcoin/history?date={date_str}&localization=false"
+
+def fetch_yearly_avg_price(year: int, today: date) -> float:
+    """Return the average daily closing price for the given year using CoinGecko."""
+    if year < 2013:
+        return HISTORICAL_AVG_PRICES.get(year, 0.0)
+
+    from_ts = _unix(year, 1, 1)
+    # For the current year use today as the end, otherwise Dec 31
+    if year == today.year:
+        to_ts = _unix(today.year, today.month, today.day)
+    else:
+        to_ts = _unix(year, 12, 31)
+
+    url = (
+        f"https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range"
+        f"?vs_currency=usd&from={from_ts}&to={to_ts}"
+    )
     req = urllib.request.Request(url, headers={"User-Agent": "btc-what-if/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
-        return float(data["market_data"]["current_price"]["usd"])
+        prices = [p[1] for p in data["prices"]]
+        if not prices:
+            return HISTORICAL_AVG_PRICES.get(year, 0.0)
+        return sum(prices) / len(prices)
     except Exception:
-        return HISTORICAL_JAN1_PRICES.get(year)
+        return HISTORICAL_AVG_PRICES.get(year, 0.0)
 
 
 def format_usd_short(amount: float) -> str:
@@ -80,27 +98,27 @@ def gain_label(multiplier: float) -> str:
     return f"-{loss_pct:.1f}%"
 
 
-def build_rows(current_price: float, current_year: int, investment: float = 100.0):
+def build_rows(current_price: float, today: date, investment: float = 100.0):
     rows = []
-    for year in range(BTC_START_YEAR, current_year + 1):
-        is_current_year = year == current_year
-        if is_current_year:
-            jan1_price = HISTORICAL_JAN1_PRICES.get(year)
-        else:
-            jan1_price = fetch_jan1_price(year)
+    for year in range(BTC_START_YEAR, today.year + 1):
+        is_current_year = year == today.year
+        print(f"  Fetching {year} average...", end=" ", flush=True)
+        avg_price = fetch_yearly_avg_price(year, today)
 
-        if not jan1_price:
+        if not avg_price:
+            print("N/A")
             rows.append({"year": year, "is_current_year": is_current_year, "skip": True})
             continue
 
-        btc_bought = investment / jan1_price
+        print(f"${avg_price:,.2f}")
+        btc_bought = investment / avg_price
         value_today = btc_bought * current_price
         multiplier = value_today / investment
         rows.append({
             "year": year,
             "is_current_year": is_current_year,
             "skip": False,
-            "jan1_price": jan1_price,
+            "avg_price": avg_price,
             "btc_bought": btc_bought,
             "value_today": value_today,
             "multiplier": multiplier,
@@ -109,14 +127,15 @@ def build_rows(current_price: float, current_year: int, investment: float = 100.
 
 
 def print_terminal(rows, current_price: float, today: date):
-    W = 66
+    W = 68
+    print()
     print("=" * W)
-    print("         BTC WHAT-IF CALCULATOR")
-    print(f"         {today.strftime('%A, %B %d, %Y')}")
+    print("          BTC WHAT-IF CALCULATOR")
+    print(f"          {today.strftime('%A, %B %d, %Y')}")
     print("=" * W)
     print(f"  Current BTC price: ${current_price:,.2f}\n")
-    print(f"  If you had invested $100 on January 1st of each year:\n")
-    print(f"  {'Year':<7} {'Jan 1 price':>13} {'BTC bought':>14} {'Value today':>16}  Return")
+    print(f"  $100 invested at each year's average price:\n")
+    print(f"  {'Year':<7} {'Avg price':>13} {'BTC bought':>14} {'Value today':>16}  Return")
     print(f"  {'':-<7} {'':-<13} {'':-<14} {'':-<16}  {'':-<10}")
 
     for r in rows:
@@ -124,14 +143,14 @@ def print_terminal(rows, current_price: float, today: date):
         if r["skip"]:
             print(f"  {label:<7} {'N/A':>13} {'N/A':>14} {'N/A':>16}")
             continue
-        p = r["jan1_price"]
-        price_str = f"${p:.5f}" if p < 1 else f"${p:,.2f}"
+        p = r["avg_price"]
+        price_str = f"${p:.4f}" if p < 1 else f"${p:,.2f}"
         print(
             f"  {label:<7} {price_str:>13} {r['btc_bought']:>14.6f}"
             f" {format_usd_short(r['value_today']):>16}  {gain_label(r['multiplier'])}"
         )
 
-    print(f"\n  * Jan 1, {today.year} price not yet available — using stored value")
+    print(f"\n  * {today.year} is partial — average covers Jan 1 through today")
     print("=" * W)
 
 
@@ -139,30 +158,30 @@ def build_markdown_table(rows, current_price: float, today: date) -> str:
     lines = [
         f"_Last updated: **{today.strftime('%A, %B %d, %Y')}** — BTC price: **${current_price:,.2f}**_",
         "",
-        "| Year | BTC price on Jan 1 | BTC you'd get for $100 | Value today | Return |",
-        "|------|-------------------|------------------------|-------------|--------|",
+        "| Year | Avg BTC price | BTC you'd get for $100 | Value today | Return |",
+        "|------|--------------|------------------------|-------------|--------|",
     ]
     for r in rows:
         label = f"{r['year']} \\*" if r["is_current_year"] else str(r["year"])
         if r["skip"]:
             lines.append(f"| {label} | N/A | N/A | N/A | N/A |")
             continue
-        p = r["jan1_price"]
-        price_str = f"${p:.5f}" if p < 1 else f"${p:,.2f}"
+        p = r["avg_price"]
+        price_str = f"${p:.4f}" if p < 1 else f"${p:,.2f}"
         lines.append(
             f"| {label} | {price_str} | {r['btc_bought']:.6f} BTC"
             f" | {format_usd_short(r['value_today'])} | {gain_label(r['multiplier'])} |"
         )
     lines.append("")
-    lines.append(f"\\* Jan 1, {today.year} price not yet available — using stored value")
+    lines.append(f"\\* {today.year} is partial — average covers Jan 1 through today")
     return "\n".join(lines)
 
 
 def update_readme(markdown_block: str, readme_path: Path):
     if not readme_path.exists():
         readme_path.write_text(
-            f"# BTC What-If\n\n"
-            f"How much would $100 invested in BTC on January 1st of each year be worth today?\n\n"
+            "# BTC What-If\n\n"
+            "How much would $100 invested in BTC at each year's average price be worth today?\n\n"
             f"{README_START}\n{markdown_block}\n{README_END}\n"
         )
         print(f"Created {readme_path}")
@@ -192,7 +211,8 @@ def main():
         print(f"FAILED ({e})")
         raise SystemExit(1)
 
-    rows = build_rows(current_price, today.year)
+    print("Fetching yearly averages...")
+    rows = build_rows(current_price, today)
     print_terminal(rows, current_price, today)
 
     if update_readme_flag:
