@@ -1,0 +1,24 @@
+name: BTC What-If Daily Report
+
+on:
+  schedule:
+    # Runs Mon–Fri at 9:00 AM UTC
+    - cron: "0 9 * * 1-5"
+  workflow_dispatch: # allow manual runs
+
+jobs:
+  btc-report:
+    name: BTC What-If Calculator
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run BTC What-If Calculator
+        run: python btc_what_if.py
