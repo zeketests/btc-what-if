@@ -37,6 +37,7 @@ HISTORICAL_AVG_PRICES = {
     2023: 26890.0,
     2024: 65000.0,
     2025: 90000.0,
+    2026: 84000.0,  # YTD average Jan 1 – Apr 9, 2026 (estimated)
 }
 
 README_START = "<!-- BTC_RESULTS_START -->"
